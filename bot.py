@@ -259,7 +259,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         USER_CONTEXT.pop(user_id)
         await update.message.reply_text("✅ File berhasil disimpan")
 
-3
     elif state == SEARCH_FILE:
         keyword = text.lower().strip()
         keyword = keyword.replace(" ", "%")
