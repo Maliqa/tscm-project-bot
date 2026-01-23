@@ -1,4 +1,12 @@
+# Python
 __pycache__/
-*.db
+*.pyc
+
+# Environment & secrets
 config.py
-.env
+
+# Database
+*.db
+
+# OS
+.DS_Store
