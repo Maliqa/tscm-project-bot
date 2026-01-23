@@ -1,4 +1,6 @@
 import sqlite3
+from datetime import datetime
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -6,82 +8,51 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
-from telegram import Update
 from config import BOT_TOKEN
+
+# ======================
+# CONFIG
+# ======================
+DB_NAME = "files.db"
+ALLOWED_EXT = (".pdf", ".xls", ".xlsx", ".jpg", ".jpeg")
+
+# ======================
+# STATE
+# ======================
+USER_STATE = {}
+USER_CONTEXT = {}
+
+ASK_YEAR = "ASK_YEAR"
+ASK_PROJECT = "ASK_PROJECT"
+ASK_CUSTOMER = "ASK_CUSTOMER"
+ASK_TITLE = "ASK_TITLE"
+ASK_PIC = "ASK_PIC"
 
 # ======================
 # DATABASE
 # ======================
-DB_NAME = "project_management.db"
-
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-
     c.execute("""
-        CREATE TABLE IF NOT EXISTS projects (
+        CREATE TABLE IF NOT EXISTS files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            customer TEXT,
-            status TEXT
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS project_files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER,
             file_name TEXT,
+            telegram_file_id TEXT,
             file_type TEXT,
-            telegram_file_id TEXT
+            uploaded_at TEXT
         )
     """)
-
     conn.commit()
     conn.close()
 
-def add_project(name, customer):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO projects (name, customer, status) VALUES (?, ?, ?)",
-        (name, customer, "Not Started")
-    )
-    conn.commit()
-    conn.close()
-
-def list_projects():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT id, name, status FROM projects")
-    rows = c.fetchall()
-    conn.close()
-    return rows
-
-def update_project(project_id, field, value):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute(
-        f"UPDATE projects SET {field}=? WHERE id=?",
-        (value, project_id)
-    )
-    conn.commit()
-    conn.close()
-
-def delete_project(project_id):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("DELETE FROM projects WHERE id=?", (project_id,))
-    conn.commit()
-    conn.close()
-
-def save_file(project_id, file_name, file_type, telegram_file_id):
+def save_file(name, file_id, file_type):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("""
-        INSERT INTO project_files (project_id, file_name, file_type, telegram_file_id)
+        INSERT INTO files (file_name, telegram_file_id, file_type, uploaded_at)
         VALUES (?, ?, ?, ?)
-    """, (project_id, file_name, file_type, telegram_file_id))
+    """, (name, file_id, file_type, datetime.now().isoformat()))
     conn.commit()
     conn.close()
 
@@ -89,201 +60,149 @@ def search_files(keyword):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("""
-        SELECT file_name, telegram_file_id
-        FROM project_files
-        WHERE file_name LIKE ?
-    """, (f"%{keyword}%",))
+        SELECT file_name, telegram_file_id, file_type
+        FROM files
+        WHERE LOWER(file_name) LIKE ?
+        ORDER BY uploaded_at DESC
+    """, (f"%{keyword.lower()}%",))
     rows = c.fetchall()
     conn.close()
     return rows
 
 # ======================
-# STATE MACHINE
-# ======================
-USER_STATE = {}
-USER_CONTEXT = {}
-
-ADD_PROJECT_NAME = "ADD_PROJECT_NAME"
-ADD_PROJECT_CUSTOMER = "ADD_PROJECT_CUSTOMER"
-
-EDIT_PROJECT_CHOOSE_FIELD = "EDIT_PROJECT_CHOOSE_FIELD"
-EDIT_PROJECT_NEW_VALUE = "EDIT_PROJECT_NEW_VALUE"
-
-DELETE_PROJECT_CONFIRM = "DELETE_PROJECT_CONFIRM"
-
-UPLOAD_FILE_PROJECT = "UPLOAD_FILE_PROJECT"
-SEARCH_FILE = "SEARCH_FILE"
-
-ALLOWED_EXT = (".pdf", ".xls", ".xlsx")
-
-# ======================
-# COMMAND HANDLERS
+# COMMANDS
 # ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 TSCM Project Monitor Bot\n\n"
-        "/addproject - Tambah project\n"
-        "/projects - List project\n"
-        "/edit <id> - Edit project\n"
-        "/delete <id> - Hapus project\n"
-        "/search - Cari file\n\n"
-        "📄 Kirim PDF / Excel untuk upload file"
-    )
-
-async def addproject_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    USER_STATE[user_id] = ADD_PROJECT_NAME
-    USER_CONTEXT[user_id] = {}
-    await update.message.reply_text("📌 Nama project?")
-
-async def projects_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    projects = list_projects()
-    if not projects:
-        await update.message.reply_text("📭 Belum ada project.")
-        return
-
-    msg = "📋 List Project:\n\n"
-    for p in projects:
-        msg += f"{p[0]}. {p[1]} ({p[2]})\n"
-    await update.message.reply_text(msg)
-
-async def editproject_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Gunakan: /edit <project_id>")
-        return
-
-    user_id = update.effective_user.id
-    USER_CONTEXT[user_id] = {"project_id": context.args[0]}
-    USER_STATE[user_id] = EDIT_PROJECT_CHOOSE_FIELD
-
-    await update.message.reply_text(
-        "✏️ Mau ubah apa?\n"
-        "Ketik salah satu:\n"
-        "name / customer / status"
-    )
-
-async def deleteproject_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Gunakan: /delete <project_id>")
-        return
-
-    user_id = update.effective_user.id
-    USER_CONTEXT[user_id] = {"project_id": context.args[0]}
-    USER_STATE[user_id] = DELETE_PROJECT_CONFIRM
-
-    await update.message.reply_text(
-        f"⚠️ Yakin hapus project ID {context.args[0]}?\n"
-        "Ketik YES untuk lanjut"
+        "📦 TSCM File Storage Bot\n\n"
+        "📤 Kirim file PDF / Excel / JPG\n"
+        "File akan otomatis di-rename\n\n"
+        "🔍 Cari file:\n"
+        "/search <keyword>\n"
+        "/list\n\n"
+        "Contoh search:\n"
+        "/search 1990\n"
+        "/search MAA\n"
+        "/search Aveva"
     )
 
 async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    USER_STATE[update.effective_user.id] = SEARCH_FILE
-    await update.message.reply_text("🔍 Cari file apa?")
+    if not context.args:
+        await update.message.reply_text("❌ Contoh: /search MAA")
+        return
+
+    keyword = " ".join(context.args)
+    results = search_files(keyword)
+
+    if not results:
+        await update.message.reply_text("❌ File tidak ditemukan")
+        return
+
+    await update.message.reply_text(f"🔍 Ditemukan {len(results)} file:")
+
+    for name, fid, ftype in results[:10]:
+        if ftype == "photo":
+            await update.message.reply_photo(photo=fid, caption=name)
+        else:
+            await update.message.reply_document(document=fid, caption=name)
+
+async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    results = search_files("")
+    if not results:
+        await update.message.reply_text("📭 Belum ada file")
+        return
+
+    msg = "📂 File Tersimpan:\n\n"
+    for r in results[:20]:
+        msg += f"• {r[0]}\n"
+
+    await update.message.reply_text(msg)
 
 # ======================
 # FILE HANDLER
 # ======================
 async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
     doc = update.message.document
-    if not doc:
+    photo = update.message.photo
+
+    if doc:
+        if not doc.file_name.lower().endswith(ALLOWED_EXT):
+            await update.message.reply_text("❌ Format tidak didukung")
+            return
+
+        ext = doc.file_name.split(".")[-1].lower()
+        USER_CONTEXT[uid] = {
+            "file_id": doc.file_id,
+            "ext": ext,
+            "type": "document"
+        }
+
+    elif photo:
+        USER_CONTEXT[uid] = {
+            "file_id": photo[-1].file_id,
+            "ext": "jpg",
+            "type": "photo"
+        }
+    else:
         return
 
-    if not doc.file_name.lower().endswith(ALLOWED_EXT):
-        await update.message.reply_text("❌ Hanya PDF & Excel yang diperbolehkan")
-        return
-
-    user_id = update.effective_user.id
-    USER_STATE[user_id] = UPLOAD_FILE_PROJECT
-    USER_CONTEXT[user_id] = {
-        "file_name": doc.file_name,
-        "telegram_file_id": doc.file_id
-    }
-
-    await update.message.reply_text("📁 File ini untuk project ID berapa?")
+    USER_STATE[uid] = ASK_YEAR
+    await update.message.reply_text("📅 Tahun file? (contoh: 1990 / 2024)")
 
 # ======================
-# TEXT HANDLER (ALL STATE)
+# TEXT STATE HANDLER
 # ======================
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    state = USER_STATE.get(user_id)
+    uid = update.effective_user.id
+    text = update.message.text.strip()
+    state = USER_STATE.get(uid)
 
-    if state == ADD_PROJECT_NAME:
-        USER_CONTEXT[user_id]["name"] = text
-        USER_STATE[user_id] = ADD_PROJECT_CUSTOMER
-        await update.message.reply_text("🏢 Nama customer?")
+    if not state:
+        return
 
-    elif state == ADD_PROJECT_CUSTOMER:
-        add_project(USER_CONTEXT[user_id]["name"], text)
-        USER_STATE.pop(user_id)
-        USER_CONTEXT.pop(user_id)
-        await update.message.reply_text("✅ Project berhasil ditambahkan")
+    ctx = USER_CONTEXT[uid]
 
-    elif state == EDIT_PROJECT_CHOOSE_FIELD:
-        if text not in ["name", "customer", "status"]:
-            await update.message.reply_text("❌ Pilih: name / customer / status")
+    if state == ASK_YEAR:
+        if not text.isdigit() or len(text) != 4:
+            await update.message.reply_text("❌ Tahun harus 4 digit (contoh: 1990)")
             return
-        USER_CONTEXT[user_id]["field"] = text
-        USER_STATE[user_id] = EDIT_PROJECT_NEW_VALUE
-        await update.message.reply_text("✏️ Masukkan nilai baru:")
+        ctx["year"] = text
+        USER_STATE[uid] = ASK_PROJECT
+        await update.message.reply_text("📌 Nama Project?")
 
-    elif state == EDIT_PROJECT_NEW_VALUE:
-        update_project(
-            USER_CONTEXT[user_id]["project_id"],
-            USER_CONTEXT[user_id]["field"],
-            text
+    elif state == ASK_PROJECT:
+        ctx["project"] = text.replace(" ", "_")
+        USER_STATE[uid] = ASK_CUSTOMER
+        await update.message.reply_text("🏢 Customer?")
+
+    elif state == ASK_CUSTOMER:
+        ctx["customer"] = text.replace(" ", "_")
+        USER_STATE[uid] = ASK_TITLE
+        await update.message.reply_text("📝 Judul File?")
+
+    elif state == ASK_TITLE:
+        ctx["title"] = text.replace(" ", "_")
+        USER_STATE[uid] = ASK_PIC
+        await update.message.reply_text("👤 PIC?")
+
+    elif state == ASK_PIC:
+        ctx["pic"] = text.replace(" ", "_")
+
+        filename = (
+            f"{ctx['year']}_{ctx['project']}_{ctx['customer']}_"
+            f"{ctx['title']}_{ctx['pic']}.{ctx['ext']}"
         )
-        USER_STATE.pop(user_id)
-        USER_CONTEXT.pop(user_id)
-        await update.message.reply_text("✅ Project berhasil di-update")
 
-    elif state == DELETE_PROJECT_CONFIRM:
-        if text == "YES":
-            delete_project(USER_CONTEXT[user_id]["project_id"])
-            await update.message.reply_text("🗑️ Project berhasil dihapus")
-        else:
-            await update.message.reply_text("❌ Dibatalkan")
-        USER_STATE.pop(user_id)
-        USER_CONTEXT.pop(user_id)
+        save_file(filename, ctx["file_id"], ctx["type"])
 
-    elif state == UPLOAD_FILE_PROJECT:
-        data = USER_CONTEXT[user_id]
-        save_file(
-            text,
-            data["file_name"],
-            "pdf" if data["file_name"].endswith(".pdf") else "excel",
-            data["telegram_file_id"]
+        USER_STATE.pop(uid)
+        USER_CONTEXT.pop(uid)
+
+        await update.message.reply_text(
+            f"✅ File disimpan sebagai:\n`{filename}`",
+            parse_mode="Markdown"
         )
-        USER_STATE.pop(user_id)
-        USER_CONTEXT.pop(user_id)
-        await update.message.reply_text("✅ File berhasil disimpan")
-
-    elif state == SEARCH_FILE:
-        keyword = text.lower().strip()
-        keyword = keyword.replace(" ", "%")
-
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("""
-            SELECT file_name, telegram_file_id
-            FROM project_files
-            WHERE LOWER(file_name) LIKE ?
-        """, (f"%{keyword}%",))
-        rows = c.fetchall()
-        conn.close()
-
-        if not rows:
-            await update.message.reply_text("❌ File tidak ditemukan")
-        else:
-            await update.message.reply_text(f"🔍 Ditemukan {len(rows)} file:")
-            for r in rows:
-                await update.message.reply_document(
-                    r[1],
-                    caption=f"📄 {r[0]}"
-                )
-
-        USER_STATE.pop(user_id, None)
 
 # ======================
 # MAIN
@@ -293,14 +212,10 @@ init_db()
 app = Application.builder().token(BOT_TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("addproject", addproject_cmd))
-app.add_handler(CommandHandler("projects", projects_cmd))
-app.add_handler(CommandHandler("edit", editproject_cmd))
-app.add_handler(CommandHandler("delete", deleteproject_cmd))
 app.add_handler(CommandHandler("search", search_cmd))
-
-app.add_handler(MessageHandler(filters.Document.ALL, file_handler))
+app.add_handler(CommandHandler("list", list_cmd))
+app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, file_handler))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-print("🤖 Bot running...")
+print("📦 TSCM Storage Bot RUNNING (FINAL & STABLE)")
 app.run_polling()
